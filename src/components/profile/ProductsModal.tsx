@@ -175,6 +175,14 @@ export function ProductsModal({ isOpen, onClose, userProfileId }: ProductsModalP
     return (match && match[2].length === 11) ? match[2] : null;
   };
 
+  const getYoutubeThumbnail = (url: string): string | null => {
+    const videoId = extractYoutubeId(url);
+    if (videoId) {
+      return `https://img.youtube.com/vi/${videoId}/mqdefault.jpg`;
+    }
+    return null;
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -345,10 +353,17 @@ export function ProductsModal({ isOpen, onClose, userProfileId }: ProductsModalP
                     <div className="relative rounded-lg overflow-hidden bg-secondary h-32">
                       {getMediaType(formData.media_url) === 'youtube' ? (
                         <div 
-                          className="w-full h-full flex items-center justify-center cursor-pointer bg-red-500/20 hover:bg-red-500/30 transition-colors"
+                          className="w-full h-full relative cursor-pointer group"
                           onClick={() => handlePlayVideo(formData.media_url)}
                         >
-                          <Play className="h-8 w-8 text-red-500" />
+                          <img
+                            src={getYoutubeThumbnail(formData.media_url) || ''}
+                            alt="YouTube Preview"
+                            className="w-full h-full object-cover"
+                          />
+                          <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/50 transition-colors">
+                            <Play className="h-8 w-8 text-white" fill="white" />
+                          </div>
                         </div>
                       ) : (
                         <img
@@ -439,8 +454,15 @@ export function ProductsModal({ isOpen, onClose, userProfileId }: ProductsModalP
                             }}
                           >
                             {product.media_type === 'youtube' ? (
-                              <div className="w-full h-full flex items-center justify-center bg-red-500/20 hover:bg-red-500/30 transition-colors">
-                                <Play className="h-6 w-6 text-red-500" />
+                              <div className="w-full h-full relative group">
+                                <img
+                                  src={getYoutubeThumbnail(product.media_url!) || ''}
+                                  alt={product.title}
+                                  className="w-full h-full object-cover"
+                                />
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/30 group-hover:bg-black/50 transition-colors">
+                                  <Play className="h-5 w-5 text-white" fill="white" />
+                                </div>
                               </div>
                             ) : (
                               <img
