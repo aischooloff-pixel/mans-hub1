@@ -1038,9 +1038,11 @@ async function handleSetDiscount(chatId: number, userId: number, args: string) {
 
   const { error } = await supabase
     .from('subscription_pricing')
-    .update({ discount_percent: percent, updated_at: new Date().toISOString() });
+    .update({ discount_percent: percent, updated_at: new Date().toISOString() })
+    .neq('tier', '');
 
   if (error) {
+    console.error('Error updating discount:', error);
     await sendAdminMessage(chatId, '❌ Ошибка при обновлении скидки');
     return;
   }
@@ -1066,9 +1068,11 @@ async function handleSetYearlyDiscount(chatId: number, userId: number, args: str
 
   const { error } = await supabase
     .from('subscription_pricing')
-    .update({ yearly_discount_percent: percent, updated_at: new Date().toISOString() });
+    .update({ yearly_discount_percent: percent, updated_at: new Date().toISOString() })
+    .neq('tier', '');
 
   if (error) {
+    console.error('Error updating yearly discount:', error);
     await sendAdminMessage(chatId, '❌ Ошибка при обновлении скидки');
     return;
   }
