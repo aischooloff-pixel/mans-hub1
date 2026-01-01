@@ -161,6 +161,16 @@ export function ReferralModal({ isOpen, onClose, referralCode }: ReferralModalPr
             </div>
           </div>
 
+          {/* Referral Info Link */}
+          <a
+            href="https://telegra.ph/Hj-01-01-5"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center gap-2 text-sm text-primary hover:underline mb-4"
+          >
+            ℹ️ Информация о реферальной системе
+          </a>
+
           {/* Share Button */}
           <Button onClick={handleShare} className="w-full gap-2 mb-6" disabled={!referralCode}>
             <Share2 className="h-4 w-4" />
