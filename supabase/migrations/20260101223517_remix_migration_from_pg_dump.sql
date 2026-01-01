@@ -46,6 +46,26 @@ CREATE TYPE public.app_role AS ENUM (
 
 
 --
+-- Name: badge_type; Type: TYPE; Schema: public; Owner: -
+--
+
+CREATE TYPE public.badge_type AS ENUM (
+    'author',
+    'experienced_author',
+    'legend',
+    'man',
+    'expert',
+    'sage',
+    'partner',
+    'founder',
+    'moderator_badge',
+    'referrer',
+    'hustler',
+    'ambassador'
+);
+
+
+--
 -- Name: create_comment_notification(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -295,6 +315,63 @@ $$;
 
 
 --
+-- Name: get_badge_display(public.badge_type); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_badge_display(p_badge public.badge_type) RETURNS TABLE(name text, emoji text, priority integer)
+    LANGUAGE sql STABLE
+    AS $$
+  SELECT 
+    CASE p_badge
+      -- Staff (highest priority)
+      WHEN 'founder' THEN 'Основатель'
+      WHEN 'moderator_badge' THEN 'Модератор'
+      WHEN 'partner' THEN 'Партнёр'
+      -- Publication
+      WHEN 'legend' THEN 'Легенда'
+      WHEN 'experienced_author' THEN 'Опытный автор'
+      WHEN 'author' THEN 'Автор'
+      -- Reputation
+      WHEN 'sage' THEN 'Мудрец'
+      WHEN 'expert' THEN 'Эксперт'
+      WHEN 'man' THEN 'Мужчина'
+      -- Referral
+      WHEN 'ambassador' THEN 'Амбассадор'
+      WHEN 'hustler' THEN 'Хастлер'
+      WHEN 'referrer' THEN 'Рефер'
+    END,
+    CASE p_badge
+      WHEN 'founder' THEN '👑'
+      WHEN 'moderator_badge' THEN '🛡️'
+      WHEN 'partner' THEN '🤝'
+      WHEN 'legend' THEN '🏆'
+      WHEN 'experienced_author' THEN '✍️'
+      WHEN 'author' THEN '📝'
+      WHEN 'sage' THEN '🧙'
+      WHEN 'expert' THEN '🎓'
+      WHEN 'man' THEN '💪'
+      WHEN 'ambassador' THEN '🌟'
+      WHEN 'hustler' THEN '🔥'
+      WHEN 'referrer' THEN '👥'
+    END,
+    CASE p_badge
+      WHEN 'founder' THEN 100
+      WHEN 'moderator_badge' THEN 90
+      WHEN 'partner' THEN 80
+      WHEN 'legend' THEN 70
+      WHEN 'sage' THEN 65
+      WHEN 'ambassador' THEN 60
+      WHEN 'experienced_author' THEN 50
+      WHEN 'expert' THEN 45
+      WHEN 'hustler' THEN 40
+      WHEN 'author' THEN 30
+      WHEN 'man' THEN 25
+      WHEN 'referrer' THEN 20
+    END;
+$$;
+
+
+--
 -- Name: get_or_create_short_id(uuid); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -344,6 +421,157 @@ $$;
 
 
 --
+-- Name: notify_badge_granted(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.notify_badge_granted() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+DECLARE
+  v_badge_name text;
+  v_badge_emoji text;
+BEGIN
+  -- Map badge type to human-readable name and emoji
+  SELECT 
+    CASE NEW.badge
+      WHEN 'author' THEN 'Автор'
+      WHEN 'experienced_author' THEN 'Опытный автор'
+      WHEN 'legend' THEN 'Легенда'
+      WHEN 'man' THEN 'Мужчина'
+      WHEN 'expert' THEN 'Эксперт'
+      WHEN 'sage' THEN 'Мудрец'
+      WHEN 'partner' THEN 'Партнёр'
+      WHEN 'founder' THEN 'Основатель'
+      WHEN 'moderator_badge' THEN 'Модератор'
+      WHEN 'referrer' THEN 'Рефер'
+      WHEN 'hustler' THEN 'Хастлер'
+      WHEN 'ambassador' THEN 'Амбассадор'
+      ELSE NEW.badge::text
+    END,
+    CASE NEW.badge
+      WHEN 'author' THEN '📝'
+      WHEN 'experienced_author' THEN '✍️'
+      WHEN 'legend' THEN '🏆'
+      WHEN 'man' THEN '💪'
+      WHEN 'expert' THEN '🎓'
+      WHEN 'sage' THEN '🧙'
+      WHEN 'partner' THEN '🤝'
+      WHEN 'founder' THEN '👑'
+      WHEN 'moderator_badge' THEN '🛡️'
+      WHEN 'referrer' THEN '👥'
+      WHEN 'hustler' THEN '🔥'
+      WHEN 'ambassador' THEN '🌟'
+      ELSE '🏅'
+    END
+  INTO v_badge_name, v_badge_emoji;
+
+  -- Insert notification
+  INSERT INTO notifications (user_profile_id, type, message)
+  VALUES (
+    NEW.user_profile_id,
+    'badge',
+    v_badge_emoji || ' Вам присвоен значок «' || v_badge_name || '»!'
+  );
+
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: recalculate_user_badges(uuid); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.recalculate_user_badges(p_user_id uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+DECLARE
+  v_articles_count int;
+  v_reputation int;
+  v_paying_referrals int;
+BEGIN
+  -- Get article count
+  SELECT COUNT(*) INTO v_articles_count
+  FROM articles
+  WHERE author_id = p_user_id AND status = 'approved';
+
+  -- Get reputation
+  SELECT COALESCE(reputation, 0) INTO v_reputation
+  FROM profiles
+  WHERE id = p_user_id;
+
+  -- Get paying referrals count
+  SELECT COUNT(DISTINCT referred_id) INTO v_paying_referrals
+  FROM referral_earnings
+  WHERE referrer_id = p_user_id;
+
+  -- Publication badges (PROGRESSIVE - only keep highest tier)
+  -- Remove all automatic publication badges first, then add the appropriate one
+  DELETE FROM user_badges 
+  WHERE user_profile_id = p_user_id 
+    AND badge IN ('author', 'experienced_author', 'legend') 
+    AND is_manual = false;
+
+  IF v_articles_count >= 30 THEN
+    INSERT INTO user_badges (user_profile_id, badge, is_manual)
+    VALUES (p_user_id, 'legend', false)
+    ON CONFLICT (user_profile_id, badge) DO NOTHING;
+  ELSIF v_articles_count >= 10 THEN
+    INSERT INTO user_badges (user_profile_id, badge, is_manual)
+    VALUES (p_user_id, 'experienced_author', false)
+    ON CONFLICT (user_profile_id, badge) DO NOTHING;
+  ELSIF v_articles_count >= 3 THEN
+    INSERT INTO user_badges (user_profile_id, badge, is_manual)
+    VALUES (p_user_id, 'author', false)
+    ON CONFLICT (user_profile_id, badge) DO NOTHING;
+  END IF;
+
+  -- Reputation badges (PROGRESSIVE - only keep highest tier)
+  DELETE FROM user_badges 
+  WHERE user_profile_id = p_user_id 
+    AND badge IN ('man', 'expert', 'sage') 
+    AND is_manual = false;
+
+  IF v_reputation >= 1000 THEN
+    INSERT INTO user_badges (user_profile_id, badge, is_manual)
+    VALUES (p_user_id, 'sage', false)
+    ON CONFLICT (user_profile_id, badge) DO NOTHING;
+  ELSIF v_reputation >= 200 THEN
+    INSERT INTO user_badges (user_profile_id, badge, is_manual)
+    VALUES (p_user_id, 'expert', false)
+    ON CONFLICT (user_profile_id, badge) DO NOTHING;
+  ELSIF v_reputation >= 50 THEN
+    INSERT INTO user_badges (user_profile_id, badge, is_manual)
+    VALUES (p_user_id, 'man', false)
+    ON CONFLICT (user_profile_id, badge) DO NOTHING;
+  END IF;
+
+  -- Referral badges (PROGRESSIVE - only keep highest tier)
+  DELETE FROM user_badges 
+  WHERE user_profile_id = p_user_id 
+    AND badge IN ('referrer', 'hustler', 'ambassador') 
+    AND is_manual = false;
+
+  IF v_paying_referrals >= 20 THEN
+    INSERT INTO user_badges (user_profile_id, badge, is_manual)
+    VALUES (p_user_id, 'ambassador', false)
+    ON CONFLICT (user_profile_id, badge) DO NOTHING;
+  ELSIF v_paying_referrals >= 10 THEN
+    INSERT INTO user_badges (user_profile_id, badge, is_manual)
+    VALUES (p_user_id, 'hustler', false)
+    ON CONFLICT (user_profile_id, badge) DO NOTHING;
+  ELSIF v_paying_referrals >= 5 THEN
+    INSERT INTO user_badges (user_profile_id, badge, is_manual)
+    VALUES (p_user_id, 'referrer', false)
+    ON CONFLICT (user_profile_id, badge) DO NOTHING;
+  END IF;
+END;
+$$;
+
+
+--
 -- Name: set_product_short_code(); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -389,6 +617,53 @@ BEGIN
       END;
     END LOOP;
   END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: trigger_recalculate_badges_on_article(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.trigger_recalculate_badges_on_article() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+BEGIN
+  IF NEW.status = 'approved' AND (OLD IS NULL OR OLD.status != 'approved') THEN
+    PERFORM recalculate_user_badges(NEW.author_id);
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: trigger_recalculate_badges_on_referral(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.trigger_recalculate_badges_on_referral() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+BEGIN
+  PERFORM recalculate_user_badges(NEW.referrer_id);
+  RETURN NEW;
+END;
+$$;
+
+
+--
+-- Name: trigger_recalculate_badges_on_reputation(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.trigger_recalculate_badges_on_reputation() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER
+    SET search_path TO 'public'
+    AS $$
+BEGIN
+  PERFORM recalculate_user_badges(NEW.id);
   RETURN NEW;
 END;
 $$;
@@ -656,6 +931,7 @@ CREATE TABLE public.profiles (
     referral_code text,
     referred_by uuid,
     referral_earnings numeric DEFAULT 0,
+    blocked_until timestamp with time zone,
     CONSTRAINT profiles_subscription_tier_check CHECK ((subscription_tier = ANY (ARRAY['free'::text, 'plus'::text, 'premium'::text])))
 );
 
@@ -687,6 +963,44 @@ CREATE TABLE public.promo_codes (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
+
+
+--
+-- Name: public_profiles; Type: VIEW; Schema: public; Owner: -
+--
+
+CREATE VIEW public.public_profiles WITH (security_invoker='true') AS
+ SELECT id,
+    username,
+    first_name,
+    last_name,
+    avatar_url,
+    bio,
+    reputation,
+    website,
+    telegram_channel,
+    show_name,
+    show_avatar,
+    show_username,
+    created_at,
+        CASE
+            WHEN show_name THEN first_name
+            ELSE NULL::text
+        END AS display_first_name,
+        CASE
+            WHEN show_name THEN last_name
+            ELSE NULL::text
+        END AS display_last_name,
+        CASE
+            WHEN show_username THEN username
+            ELSE NULL::text
+        END AS display_username,
+        CASE
+            WHEN show_avatar THEN avatar_url
+            ELSE NULL::text
+        END AS display_avatar_url
+   FROM public.profiles
+  WHERE (is_blocked = false);
 
 
 --
@@ -785,6 +1099,20 @@ CREATE TABLE public.support_questions (
     status text DEFAULT 'pending'::text NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     answered_at timestamp with time zone
+);
+
+
+--
+-- Name: user_badges; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_badges (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    user_profile_id uuid NOT NULL,
+    badge public.badge_type NOT NULL,
+    is_manual boolean DEFAULT false NOT NULL,
+    granted_at timestamp with time zone DEFAULT now() NOT NULL,
+    granted_by_telegram_id bigint
 );
 
 
@@ -1100,6 +1428,22 @@ ALTER TABLE ONLY public.support_questions
 
 
 --
+-- Name: user_badges user_badges_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_badges
+    ADD CONSTRAINT user_badges_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: user_badges user_badges_user_profile_id_badge_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_badges
+    ADD CONSTRAINT user_badges_user_profile_id_badge_key UNIQUE (user_profile_id, badge);
+
+
+--
 -- Name: user_products user_products_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1322,6 +1666,13 @@ CREATE INDEX idx_user_products_user ON public.user_products USING btree (user_pr
 
 
 --
+-- Name: articles on_article_approved; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER on_article_approved AFTER INSERT OR UPDATE ON public.articles FOR EACH ROW EXECUTE FUNCTION public.trigger_recalculate_badges_on_article();
+
+
+--
 -- Name: article_comments on_article_comment_notification; Type: TRIGGER; Schema: public; Owner: -
 --
 
@@ -1343,10 +1694,31 @@ CREATE TRIGGER on_article_like_notification AFTER INSERT ON public.article_likes
 
 
 --
+-- Name: user_badges on_badge_granted; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER on_badge_granted AFTER INSERT ON public.user_badges FOR EACH ROW EXECUTE FUNCTION public.notify_badge_granted();
+
+
+--
 -- Name: article_comments on_comment_reply_notification; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER on_comment_reply_notification AFTER INSERT ON public.article_comments FOR EACH ROW EXECUTE FUNCTION public.create_comment_reply_notification();
+
+
+--
+-- Name: referral_earnings on_referral_earning_added; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER on_referral_earning_added AFTER INSERT ON public.referral_earnings FOR EACH ROW EXECUTE FUNCTION public.trigger_recalculate_badges_on_referral();
+
+
+--
+-- Name: profiles on_reputation_changed; Type: TRIGGER; Schema: public; Owner: -
+--
+
+CREATE TRIGGER on_reputation_changed AFTER UPDATE OF reputation ON public.profiles FOR EACH ROW EXECUTE FUNCTION public.trigger_recalculate_badges_on_reputation();
 
 
 --
@@ -1623,6 +1995,14 @@ ALTER TABLE ONLY public.support_questions
 
 
 --
+-- Name: user_badges user_badges_user_profile_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_badges
+    ADD CONSTRAINT user_badges_user_profile_id_fkey FOREIGN KEY (user_profile_id) REFERENCES public.profiles(id) ON DELETE CASCADE;
+
+
+--
 -- Name: user_products user_products_user_profile_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1704,6 +2084,13 @@ CREATE POLICY "Approved products are viewable by everyone" ON public.user_produc
 
 
 --
+-- Name: user_badges Badges are viewable by everyone; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Badges are viewable by everyone" ON public.user_badges FOR SELECT USING (true);
+
+
+--
 -- Name: article_comments Comments are viewable by everyone; Type: POLICY; Schema: public; Owner: -
 --
 
@@ -1746,10 +2133,10 @@ CREATE POLICY "Podcasts are viewable by everyone" ON public.podcasts FOR SELECT 
 
 
 --
--- Name: profiles Profiles are viewable by everyone; Type: POLICY; Schema: public; Owner: -
+-- Name: profiles Public can view basic profile info; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY "Profiles are viewable by everyone" ON public.profiles FOR SELECT USING (true);
+CREATE POLICY "Public can view basic profile info" ON public.profiles FOR SELECT USING ((is_blocked = false));
 
 
 --
@@ -1778,6 +2165,13 @@ CREATE POLICY "Service role can insert articles" ON public.articles FOR INSERT T
 --
 
 CREATE POLICY "Service role can insert profiles" ON public.profiles FOR INSERT TO service_role WITH CHECK (true);
+
+
+--
+-- Name: user_badges Service role can manage badges; Type: POLICY; Schema: public; Owner: -
+--
+
+CREATE POLICY "Service role can manage badges" ON public.user_badges USING (true) WITH CHECK (true);
 
 
 --
@@ -1949,10 +2343,10 @@ CREATE POLICY "Service role only" ON public.support_questions USING (false) WITH
 
 
 --
--- Name: notifications Users can view own notifications; Type: POLICY; Schema: public; Owner: -
+-- Name: notifications Users can view only their own notifications; Type: POLICY; Schema: public; Owner: -
 --
 
-CREATE POLICY "Users can view own notifications" ON public.notifications FOR SELECT USING (true);
+CREATE POLICY "Users can view only their own notifications" ON public.notifications FOR SELECT USING ((auth.role() = 'service_role'::text));
 
 
 --
@@ -2133,6 +2527,12 @@ ALTER TABLE public.subscription_pricing ENABLE ROW LEVEL SECURITY;
 --
 
 ALTER TABLE public.support_questions ENABLE ROW LEVEL SECURITY;
+
+--
+-- Name: user_badges; Type: ROW SECURITY; Schema: public; Owner: -
+--
+
+ALTER TABLE public.user_badges ENABLE ROW LEVEL SECURITY;
 
 --
 -- Name: user_products; Type: ROW SECURITY; Schema: public; Owner: -
