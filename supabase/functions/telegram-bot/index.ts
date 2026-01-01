@@ -59,6 +59,27 @@ async function editMessageReplyMarkup(chatId: string | number, messageId: number
 async function handleStart(chatId: number, user: any, startParam?: string) {
   console.log('Handling /start command for user:', user, 'startParam:', startParam);
   
+  // Handle referral link: ref_CODE
+  let referrerId: string | null = null;
+  if (startParam?.startsWith('ref_')) {
+    const referralCode = startParam.substring(4); // Remove 'ref_' prefix
+    console.log('Processing referral code:', referralCode);
+    
+    // Find referrer by referral code
+    const { data: referrer } = await supabase
+      .from('profiles')
+      .select('id, telegram_id')
+      .eq('referral_code', referralCode)
+      .maybeSingle();
+    
+    if (referrer) {
+      referrerId = referrer.id;
+      console.log('Found referrer:', referrer.id);
+    } else {
+      console.log('Referral code not found:', referralCode);
+    }
+  }
+  
   // Check if user exists in profiles
   const { data: existingProfile } = await supabase
     .from('profiles')
@@ -67,15 +88,31 @@ async function handleStart(chatId: number, user: any, startParam?: string) {
     .maybeSingle();
   
   if (!existingProfile) {
-    // Create new profile
-    const { data: newProfile } = await supabase.from('profiles').insert({
+    // Create new profile with referrer
+    const insertData: any = {
       telegram_id: user.id,
       username: user.username || null,
       first_name: user.first_name || 'User',
       last_name: user.last_name || null,
       is_premium: user.is_premium || false,
-    }).select('id').single();
-    console.log('Created new profile for telegram user:', user.id);
+    };
+    
+    // Set referrer only if it's a different user
+    if (referrerId) {
+      const { data: referrerProfile } = await supabase
+        .from('profiles')
+        .select('telegram_id')
+        .eq('id', referrerId)
+        .maybeSingle();
+      
+      if (referrerProfile?.telegram_id !== user.id) {
+        insertData.referred_by = referrerId;
+        console.log('Setting referred_by to:', referrerId);
+      }
+    }
+    
+    const { data: newProfile } = await supabase.from('profiles').insert(insertData).select('id').single();
+    console.log('Created new profile for telegram user:', user.id, 'with referrer:', insertData.referred_by);
 
     // Schedule welcome notification for new user
     if (newProfile?.id) {
@@ -95,6 +132,35 @@ async function handleStart(chatId: number, user: any, startParam?: string) {
         scheduled_at: scheduledAt.toISOString(),
       });
       console.log(`Scheduled welcome notification for ${user.id} at ${scheduledAt.toISOString()}`);
+      
+      // Send the welcome notification immediately by invoking the function
+      try {
+        const response = await fetch(`${SUPABASE_URL}/functions/v1/send-welcome-notifications`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+          },
+        });
+        console.log('Triggered send-welcome-notifications:', await response.text());
+      } catch (e) {
+        console.error('Failed to trigger welcome notifications:', e);
+      }
+    }
+  } else if (existingProfile && !existingProfile.referred_by && referrerId) {
+    // User exists but has no referrer - set it now if referrer is different user
+    const { data: referrerProfile } = await supabase
+      .from('profiles')
+      .select('telegram_id')
+      .eq('id', referrerId)
+      .maybeSingle();
+    
+    if (referrerProfile?.telegram_id !== user.id) {
+      await supabase
+        .from('profiles')
+        .update({ referred_by: referrerId })
+        .eq('id', existingProfile.id);
+      console.log('Updated existing profile with referrer:', referrerId);
     }
   }
   
